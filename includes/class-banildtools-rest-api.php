@@ -27,6 +27,15 @@ class BanildTools_REST_API {
     }
     
     public function register_routes() {
+        // ========== TOOL DISCOVERY (for banildmcp) ==========
+        
+        // List all available tools - public endpoint for MCP discovery
+        register_rest_route(self::NAMESPACE, '/tools', array(
+            'methods' => 'GET',
+            'callback' => array($this, 'get_tools'),
+            'permission_callback' => '__return_true', // Public for discovery
+        ));
+        
         // ========== FILE OPERATIONS ==========
         
         // Read file
@@ -453,6 +462,326 @@ class BanildTools_REST_API {
         return $this->server_ops->db_query(
             $request->get_param('query'),
             $request->get_param('limit')
+        );
+    }
+    
+    // ========== TOOL DISCOVERY CALLBACK ==========
+    
+    /**
+     * Returns all available BanildTools for MCP discovery
+     * This allows banildmcp to dynamically load additional tools
+     */
+    public function get_tools($request) {
+        $tools = array(
+            // File Operations
+            array(
+                'name' => 'banildtools_read_file',
+                'description' => 'Read file contents from the WordPress server filesystem. Supports offset and limit for large files.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'target_file' => array('type' => 'string', 'description' => 'Absolute path to the file to read'),
+                        'offset' => array('type' => 'integer', 'description' => 'Line number to start reading from (optional)'),
+                        'limit' => array('type' => 'integer', 'description' => 'Number of lines to read (optional)'),
+                    ),
+                    'required' => array('target_file'),
+                ),
+                'endpoint' => '/read',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_write_file',
+                'description' => 'Write contents to a file on the WordPress server. Creates the file if it does not exist.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'file_path' => array('type' => 'string', 'description' => 'Absolute path to the file to write'),
+                        'contents' => array('type' => 'string', 'description' => 'Content to write to the file'),
+                    ),
+                    'required' => array('file_path', 'contents'),
+                ),
+                'endpoint' => '/write',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_append_file',
+                'description' => 'Append contents to an existing file on the WordPress server.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'file_path' => array('type' => 'string', 'description' => 'Absolute path to the file'),
+                        'contents' => array('type' => 'string', 'description' => 'Content to append'),
+                    ),
+                    'required' => array('file_path', 'contents'),
+                ),
+                'endpoint' => '/append',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_edit_file',
+                'description' => 'Edit a file by replacing text (search and replace). Similar to sed.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'file_path' => array('type' => 'string', 'description' => 'Absolute path to the file'),
+                        'old_string' => array('type' => 'string', 'description' => 'Text to find'),
+                        'new_string' => array('type' => 'string', 'description' => 'Text to replace with'),
+                        'replace_all' => array('type' => 'boolean', 'description' => 'Replace all occurrences (default: false)'),
+                    ),
+                    'required' => array('file_path', 'old_string', 'new_string'),
+                ),
+                'endpoint' => '/edit',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_delete_file',
+                'description' => 'Delete a file or directory from the WordPress server.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'target_file' => array('type' => 'string', 'description' => 'Absolute path to the file or directory to delete'),
+                    ),
+                    'required' => array('target_file'),
+                ),
+                'endpoint' => '/delete',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_list_directory',
+                'description' => 'List contents of a directory on the WordPress server.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'target_directory' => array('type' => 'string', 'description' => 'Absolute path to the directory'),
+                        'ignore_globs' => array('type' => 'array', 'items' => array('type' => 'string'), 'description' => 'Glob patterns to ignore'),
+                    ),
+                    'required' => array('target_directory'),
+                ),
+                'endpoint' => '/list',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_file_exists',
+                'description' => 'Check if a file or directory exists on the WordPress server.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'path' => array('type' => 'string', 'description' => 'Absolute path to check'),
+                    ),
+                    'required' => array('path'),
+                ),
+                'endpoint' => '/exists',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_file_info',
+                'description' => 'Get detailed information about a file (size, permissions, modified time, etc.).',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'path' => array('type' => 'string', 'description' => 'Absolute path to the file'),
+                    ),
+                    'required' => array('path'),
+                ),
+                'endpoint' => '/info',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_create_directory',
+                'description' => 'Create a new directory on the WordPress server.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'path' => array('type' => 'string', 'description' => 'Absolute path for the new directory'),
+                        'recursive' => array('type' => 'boolean', 'description' => 'Create parent directories if needed (default: true)'),
+                    ),
+                    'required' => array('path'),
+                ),
+                'endpoint' => '/mkdir',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_rename_file',
+                'description' => 'Rename or move a file/directory on the WordPress server.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'source' => array('type' => 'string', 'description' => 'Current path'),
+                        'destination' => array('type' => 'string', 'description' => 'New path'),
+                    ),
+                    'required' => array('source', 'destination'),
+                ),
+                'endpoint' => '/rename',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_copy_file',
+                'description' => 'Copy a file or directory on the WordPress server.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'source' => array('type' => 'string', 'description' => 'Source path'),
+                        'destination' => array('type' => 'string', 'description' => 'Destination path'),
+                    ),
+                    'required' => array('source', 'destination'),
+                ),
+                'endpoint' => '/copy',
+                'method' => 'POST',
+            ),
+            // Search Operations
+            array(
+                'name' => 'banildtools_search_files',
+                'description' => 'Search for text patterns in files (grep-like functionality). Supports regex.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'pattern' => array('type' => 'string', 'description' => 'Search pattern (regex supported)'),
+                        'path' => array('type' => 'string', 'description' => 'Directory to search in (default: WordPress root)'),
+                        'glob' => array('type' => 'string', 'description' => 'File glob pattern (e.g., "*.php")'),
+                        'case_insensitive' => array('type' => 'boolean', 'description' => 'Case insensitive search'),
+                        'context_lines' => array('type' => 'integer', 'description' => 'Lines of context around matches'),
+                        'output_mode' => array('type' => 'string', 'description' => 'Output mode: content, files_with_matches, or count'),
+                        'max_results' => array('type' => 'integer', 'description' => 'Maximum results (default: 500)'),
+                    ),
+                    'required' => array('pattern'),
+                ),
+                'endpoint' => '/search',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_glob_search',
+                'description' => 'Find files matching a glob pattern on the WordPress server.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'glob_pattern' => array('type' => 'string', 'description' => 'Glob pattern (e.g., "**/*.php")'),
+                        'target_directory' => array('type' => 'string', 'description' => 'Directory to search in'),
+                    ),
+                    'required' => array('glob_pattern'),
+                ),
+                'endpoint' => '/glob',
+                'method' => 'POST',
+            ),
+            // WordPress Operations
+            array(
+                'name' => 'banildtools_option',
+                'description' => 'Get, set, or delete WordPress options from the database.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'action' => array('type' => 'string', 'enum' => array('get', 'set', 'delete'), 'description' => 'Action to perform'),
+                        'name' => array('type' => 'string', 'description' => 'Option name'),
+                        'value' => array('description' => 'Option value (for set action)'),
+                    ),
+                    'required' => array('action', 'name'),
+                ),
+                'endpoint' => '/option',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_transient',
+                'description' => 'Get, set, or delete WordPress transients (temporary cached data).',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'action' => array('type' => 'string', 'enum' => array('get', 'set', 'delete'), 'description' => 'Action to perform'),
+                        'name' => array('type' => 'string', 'description' => 'Transient name'),
+                        'value' => array('description' => 'Transient value (for set action)'),
+                        'expiration' => array('type' => 'integer', 'description' => 'Expiration time in seconds (default: 3600)'),
+                    ),
+                    'required' => array('action', 'name'),
+                ),
+                'endpoint' => '/transient',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_debug_log',
+                'description' => 'Read, tail, or clear the WordPress debug.log file.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'action' => array('type' => 'string', 'enum' => array('read', 'clear', 'tail'), 'description' => 'Action to perform'),
+                        'lines' => array('type' => 'integer', 'description' => 'Number of lines to read (default: 100)'),
+                    ),
+                    'required' => array(),
+                ),
+                'endpoint' => '/debug-log',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_php_lint',
+                'description' => 'Check PHP syntax of a file or code snippet.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'file_path' => array('type' => 'string', 'description' => 'Path to PHP file to check'),
+                        'code' => array('type' => 'string', 'description' => 'PHP code to check (alternative to file_path)'),
+                    ),
+                    'required' => array(),
+                ),
+                'endpoint' => '/php-lint',
+                'method' => 'POST',
+            ),
+            array(
+                'name' => 'banildtools_clear_cache',
+                'description' => 'Clear WordPress and plugin caches.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'type' => array('type' => 'string', 'description' => 'Cache type to clear: all, object, transients, rewrite'),
+                    ),
+                    'required' => array(),
+                ),
+                'endpoint' => '/clear-cache',
+                'method' => 'POST',
+            ),
+            // Server Operations
+            array(
+                'name' => 'banildtools_status',
+                'description' => 'Get BanildTools plugin status and health check.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(),
+                    'required' => array(),
+                ),
+                'endpoint' => '/status',
+                'method' => 'GET',
+            ),
+            array(
+                'name' => 'banildtools_server_info',
+                'description' => 'Get detailed server information (PHP version, memory, disk space, etc.).',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(),
+                    'required' => array(),
+                ),
+                'endpoint' => '/server-info',
+                'method' => 'GET',
+            ),
+            array(
+                'name' => 'banildtools_db_query',
+                'description' => 'Execute read-only SQL queries on the WordPress database.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'query' => array('type' => 'string', 'description' => 'SQL SELECT query to execute'),
+                        'limit' => array('type' => 'integer', 'description' => 'Maximum rows to return (default: 100)'),
+                    ),
+                    'required' => array('query'),
+                ),
+                'endpoint' => '/db-query',
+                'method' => 'POST',
+            ),
+        );
+        
+        // Add plugin metadata
+        return array(
+            'plugin' => 'BanildTools',
+            'version' => '2.1.0',
+            'namespace' => self::NAMESPACE,
+            'base_url' => rest_url(self::NAMESPACE),
+            'tools_count' => count($tools),
+            'tools' => $tools,
         );
     }
 }
