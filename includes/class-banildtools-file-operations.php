@@ -24,27 +24,61 @@ class BanildTools_File_Operations {
         // If path is relative, make it absolute from ABSPATH
         if (!$this->is_absolute_path($path)) {
             $path = ABSPATH . ltrim($path, '/');
+        } else {
+            // Check if user provided an absolute path that should be relative to ABSPATH
+            // This happens often when users validly think "/wp-content/..." is the path
+            $dir = dirname($path);
+            if (!file_exists($dir)) {
+                $rel_parts = ltrim($path, '/');
+                $abs_candidate = ABSPATH . $rel_parts;
+                $abs_dir = dirname($abs_candidate);
+                
+                // If the system root path doesn't work but the ABSPATH version's directory 
+                // (or its parent) exists, assume the user meant relative to ABSPATH
+                if (file_exists($abs_dir) || file_exists(dirname($abs_dir))) {
+                    $path = $abs_candidate;
+                }
+            }
         }
         
         // Normalize the path
-        $path = realpath(dirname($path)) . '/' . basename($path);
-        
+        // Only use realpath if it resolves, otherwise preserve the path structure
+        // This fixes the bug where realpath('') returned false and stripped the directory
+        $dir = dirname($path);
+        $real_dir = realpath($dir);
+        if ($real_dir) {
+            $path = $real_dir . '/' . basename($path);
+        }
+
         // Check if file exists for read operations
         // For write operations, check if parent directory exists
         $check_path = file_exists($path) ? $path : dirname($path);
         if (!file_exists($check_path)) {
             // For create operations, try to get as much of the real path as possible
             $parts = explode('/', trim($path, '/'));
-            $build_path = '';
-            foreach ($parts as $part) {
-                $test_path = $build_path . '/' . $part;
-                if (file_exists($test_path)) {
-                    $build_path = realpath($test_path);
-                } else {
-                    $build_path .= '/' . $part;
-                }
+            $build_path = ''; 
+            
+            // Handle absolute paths correctly in construction loop
+            if ($this->is_absolute_path($path)) {
+                $build_path = '/';
             }
-            $path = $build_path;
+            
+            foreach ($parts as $part) {
+                if (empty($part)) continue;
+                
+                $test_path = $build_path . $part;
+                if (file_exists($test_path)) {
+                    if (is_link($test_path)) {
+                         $build_path = readlink($test_path);
+                    } else {
+                         $build_path = realpath($test_path);
+                    }
+                } else {
+                    $build_path = rtrim($build_path, '/') . '/' . $part;
+                }
+                $build_path = rtrim($build_path, '/') . '/';
+            }
+            $path = rtrim($build_path, '/');
         }
         
         // Validate against allowed paths
