@@ -488,8 +488,11 @@ class BanildTools_REST_API {
     // ========== YOAST SEO OPERATION CALLBACKS ==========
     
     /**
-     * Update Yoast SEO wp_yoast_indexable table directly
-     * Required for Yoast SEO 26.6+ which reads SEO data from this table
+     * Update Yoast SEO metadata using a dual-write approach
+     * 1. Updates post meta fields (source of truth for Yoast metabox)
+     * 2. Deletes existing indexable to force rebuild
+     * 3. Forces Yoast to rebuild the indexable from updated meta
+     * Required for Yoast SEO 26.6+ which reads SEO data from wp_yoast_indexable table
      */
     public function update_yoast_indexable($request) {
         global $wpdb;
@@ -502,59 +505,139 @@ class BanildTools_REST_API {
             return new WP_Error('missing_object_id', 'Object ID is required', array('status' => 400));
         }
         
-        $table = $wpdb->prefix . 'yoast_indexable';
-        
-        // Check if table exists
-        if ($wpdb->get_var("SHOW TABLES LIKE '$table'") !== $table) {
-            return new WP_REST_Response(array(
-                'success' => false,
-                'message' => 'Yoast indexable table not found - Yoast SEO may not be installed',
-            ), 200);
+        // Verify the post/object exists
+        $post = get_post($object_id);
+        if (!$post) {
+            return new WP_Error('invalid_object_id', 'Post/object not found', array('status' => 404));
         }
         
-        // Build update data
-        $update_data = array();
-        $fields = array(
-            'description', 'primary_focus_keyword', 'canonical',
-            'open_graph_title', 'open_graph_description',
-            'twitter_title', 'twitter_description'
+        $table = $wpdb->prefix . 'yoast_indexable';
+        $updated_fields = array();
+        $meta_updated = array();
+        
+        // Map API fields to Yoast post meta keys
+        $meta_mapping = array(
+            'primary_focus_keyword' => '_yoast_wpseo_focuskw',
+            'description' => '_yoast_wpseo_metadesc',
+            'title' => '_yoast_wpseo_title',
+            'open_graph_title' => '_yoast_wpseo_opengraph-title',
+            'open_graph_description' => '_yoast_wpseo_opengraph-description',
+            'twitter_title' => '_yoast_wpseo_twitter-title',
+            'twitter_description' => '_yoast_wpseo_twitter-description',
+            'canonical' => '_yoast_wpseo_canonical',
         );
         
-        foreach ($fields as $field) {
-            if (isset($params[$field]) && $params[$field] !== '') {
-                $update_data[$field] = sanitize_text_field($params[$field]);
+        // Step 1: Update post meta fields first (this is the source of truth)
+        foreach ($meta_mapping as $api_field => $meta_key) {
+            if (isset($params[$api_field]) && $params[$api_field] !== '') {
+                $value = sanitize_text_field($params[$api_field]);
+                update_post_meta($object_id, $meta_key, $value);
+                $meta_updated[$api_field] = $value;
+                $updated_fields[] = $api_field;
             }
         }
         
-        if (empty($update_data)) {
+        if (empty($updated_fields)) {
             return new WP_REST_Response(array('success' => false, 'message' => 'No fields to update'), 200);
         }
         
-        // Check if row exists
-        $exists = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM $table WHERE object_id = %d AND object_type = %s",
-            $object_id, $object_type
-        ));
+        // Step 2: Delete existing indexable to force Yoast to rebuild
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '$table'") === $table;
+        $indexable_deleted = false;
         
-        if ($exists) {
-            $result = $wpdb->update($table, $update_data, array(
-                'object_id' => $object_id,
-                'object_type' => $object_type
-            ));
-        } else {
-            // Insert new row
-            $insert_data = array_merge($update_data, array(
-                'object_id' => $object_id,
-                'object_type' => $object_type,
-                'object_sub_type' => $object_type,
-            ));
-            $result = $wpdb->insert($table, $insert_data);
+        if ($table_exists) {
+            $delete_result = $wpdb->delete(
+                $table,
+                array('object_id' => $object_id, 'object_type' => $object_type),
+                array('%d', '%s')
+            );
+            $indexable_deleted = $delete_result !== false;
+        }
+        
+        // Step 3: Force Yoast to rebuild the indexable from post meta
+        $rebuild_result = false;
+        $rebuild_method = 'none';
+        
+        if (function_exists('YoastSEO') && class_exists('Yoast\WP\SEO\Builders\Indexable_Builder')) {
+            try {
+                $indexable_repository = YoastSEO()->classes->get('Yoast\WP\SEO\Repositories\Indexable_Repository');
+                $indexable_builder = YoastSEO()->classes->get('Yoast\WP\SEO\Builders\Indexable_Builder');
+                
+                if ($indexable_repository && $indexable_builder) {
+                    // Try to find existing indexable (may have been recreated)
+                    $indexable = $indexable_repository->find_by_id_and_type($object_id, $object_type, false);
+                    
+                    if ($indexable) {
+                        $indexable_builder->build_for_id_and_type($object_id, $object_type, $indexable);
+                        $rebuild_method = 'builder_with_existing';
+                    } else {
+                        $indexable_builder->build_for_id_and_type($object_id, $object_type);
+                        $rebuild_method = 'builder_new';
+                    }
+                    $rebuild_result = true;
+                }
+            } catch (Exception $e) {
+                // Log the error but continue - the indexable will be rebuilt on next page load
+                $rebuild_method = 'error: ' . $e->getMessage();
+            }
+        }
+        
+        // Step 4: If builder failed, try direct update as fallback
+        if (!$rebuild_result && $table_exists) {
+            // Map to indexable table column names
+            $indexable_data = array();
+            $indexable_mapping = array(
+                'primary_focus_keyword' => 'primary_focus_keyword',
+                'description' => 'description',
+                'title' => 'title',
+                'open_graph_title' => 'open_graph_title',
+                'open_graph_description' => 'open_graph_description',
+                'twitter_title' => 'twitter_title',
+                'twitter_description' => 'twitter_description',
+                'canonical' => 'canonical',
+            );
+            
+            foreach ($updated_fields as $field) {
+                if (isset($indexable_mapping[$field]) && isset($meta_updated[$field])) {
+                    $indexable_data[$indexable_mapping[$field]] = $meta_updated[$field];
+                }
+            }
+            
+            if (!empty($indexable_data)) {
+                // Check if row exists after rebuild attempt
+                $exists = $wpdb->get_var($wpdb->prepare(
+                    "SELECT id FROM $table WHERE object_id = %d AND object_type = %s",
+                    $object_id, $object_type
+                ));
+                
+                if ($exists) {
+                    $wpdb->update($table, $indexable_data, array(
+                        'object_id' => $object_id,
+                        'object_type' => $object_type
+                    ));
+                    $rebuild_method = 'direct_update';
+                } else {
+                    // Get post type for object_sub_type
+                    $object_sub_type = $post->post_type;
+                    $insert_data = array_merge($indexable_data, array(
+                        'object_id' => $object_id,
+                        'object_type' => $object_type,
+                        'object_sub_type' => $object_sub_type,
+                    ));
+                    $wpdb->insert($table, $insert_data);
+                    $rebuild_method = 'direct_insert';
+                }
+            }
         }
         
         return new WP_REST_Response(array(
-            'success' => $result !== false,
+            'success' => true,
             'object_id' => $object_id,
-            'fields_updated' => array_keys($update_data),
+            'object_type' => $object_type,
+            'fields_updated' => $updated_fields,
+            'meta_updated' => array_keys($meta_updated),
+            'indexable_deleted' => $indexable_deleted,
+            'rebuild_method' => $rebuild_method,
         ), 200);
     }
     
@@ -868,12 +951,13 @@ class BanildTools_REST_API {
             // Yoast SEO Operations
             array(
                 'name' => 'banildtools_update_yoast_indexable',
-                'description' => 'Update Yoast SEO wp_yoast_indexable table directly. Required for Yoast SEO 26.6+ which reads SEO data from this table instead of post meta.',
+                'description' => 'Update Yoast SEO metadata using dual-write approach: updates post meta fields first, then forces Yoast to rebuild the indexable. Required for Yoast SEO 26.6+ which reads SEO data from wp_yoast_indexable table.',
                 'inputSchema' => array(
                     'type' => 'object',
                     'properties' => array(
                         'object_id' => array('type' => 'integer', 'description' => 'The post/page/product ID to update'),
                         'object_type' => array('type' => 'string', 'description' => 'Object type (default: post)'),
+                        'title' => array('type' => 'string', 'description' => 'SEO title'),
                         'description' => array('type' => 'string', 'description' => 'Meta description'),
                         'primary_focus_keyword' => array('type' => 'string', 'description' => 'Focus keyword'),
                         'canonical' => array('type' => 'string', 'description' => 'Canonical URL'),
