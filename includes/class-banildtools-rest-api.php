@@ -273,6 +273,26 @@ class BanildTools_REST_API {
                 'limit' => array('required' => false, 'type' => 'integer', 'default' => 100),
             ),
         ));
+        
+        // ========== YOAST SEO OPERATIONS ==========
+        
+        // Update Yoast indexable table (for Yoast SEO 26.6+)
+        register_rest_route(self::NAMESPACE, '/yoast-indexable', array(
+            'methods' => 'POST',
+            'callback' => array($this, 'update_yoast_indexable'),
+            'permission_callback' => array($this, 'check_permission'),
+            'args' => array(
+                'object_id' => array('required' => true, 'type' => 'integer'),
+                'object_type' => array('required' => false, 'type' => 'string', 'default' => 'post'),
+                'description' => array('required' => false, 'type' => 'string'),
+                'primary_focus_keyword' => array('required' => false, 'type' => 'string'),
+                'canonical' => array('required' => false, 'type' => 'string'),
+                'open_graph_title' => array('required' => false, 'type' => 'string'),
+                'open_graph_description' => array('required' => false, 'type' => 'string'),
+                'twitter_title' => array('required' => false, 'type' => 'string'),
+                'twitter_description' => array('required' => false, 'type' => 'string'),
+            ),
+        ));
     }
     
     // ========== PERMISSION CALLBACKS ==========
@@ -463,6 +483,79 @@ class BanildTools_REST_API {
             $request->get_param('query'),
             $request->get_param('limit')
         );
+    }
+    
+    // ========== YOAST SEO OPERATION CALLBACKS ==========
+    
+    /**
+     * Update Yoast SEO wp_yoast_indexable table directly
+     * Required for Yoast SEO 26.6+ which reads SEO data from this table
+     */
+    public function update_yoast_indexable($request) {
+        global $wpdb;
+        
+        $params = $request->get_json_params();
+        $object_id = isset($params['object_id']) ? intval($params['object_id']) : 0;
+        $object_type = isset($params['object_type']) ? sanitize_text_field($params['object_type']) : 'post';
+        
+        if (!$object_id) {
+            return new WP_Error('missing_object_id', 'Object ID is required', array('status' => 400));
+        }
+        
+        $table = $wpdb->prefix . 'yoast_indexable';
+        
+        // Check if table exists
+        if ($wpdb->get_var("SHOW TABLES LIKE '$table'") !== $table) {
+            return new WP_REST_Response(array(
+                'success' => false,
+                'message' => 'Yoast indexable table not found - Yoast SEO may not be installed',
+            ), 200);
+        }
+        
+        // Build update data
+        $update_data = array();
+        $fields = array(
+            'description', 'primary_focus_keyword', 'canonical',
+            'open_graph_title', 'open_graph_description',
+            'twitter_title', 'twitter_description'
+        );
+        
+        foreach ($fields as $field) {
+            if (isset($params[$field]) && $params[$field] !== '') {
+                $update_data[$field] = sanitize_text_field($params[$field]);
+            }
+        }
+        
+        if (empty($update_data)) {
+            return new WP_REST_Response(array('success' => false, 'message' => 'No fields to update'), 200);
+        }
+        
+        // Check if row exists
+        $exists = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM $table WHERE object_id = %d AND object_type = %s",
+            $object_id, $object_type
+        ));
+        
+        if ($exists) {
+            $result = $wpdb->update($table, $update_data, array(
+                'object_id' => $object_id,
+                'object_type' => $object_type
+            ));
+        } else {
+            // Insert new row
+            $insert_data = array_merge($update_data, array(
+                'object_id' => $object_id,
+                'object_type' => $object_type,
+                'object_sub_type' => $object_type,
+            ));
+            $result = $wpdb->insert($table, $insert_data);
+        }
+        
+        return new WP_REST_Response(array(
+            'success' => $result !== false,
+            'object_id' => $object_id,
+            'fields_updated' => array_keys($update_data),
+        ), 200);
     }
     
     // ========== TOOL DISCOVERY CALLBACK ==========
@@ -770,6 +863,28 @@ class BanildTools_REST_API {
                     'required' => array('query'),
                 ),
                 'endpoint' => '/db-query',
+                'method' => 'POST',
+            ),
+            // Yoast SEO Operations
+            array(
+                'name' => 'banildtools_update_yoast_indexable',
+                'description' => 'Update Yoast SEO wp_yoast_indexable table directly. Required for Yoast SEO 26.6+ which reads SEO data from this table instead of post meta.',
+                'inputSchema' => array(
+                    'type' => 'object',
+                    'properties' => array(
+                        'object_id' => array('type' => 'integer', 'description' => 'The post/page/product ID to update'),
+                        'object_type' => array('type' => 'string', 'description' => 'Object type (default: post)'),
+                        'description' => array('type' => 'string', 'description' => 'Meta description'),
+                        'primary_focus_keyword' => array('type' => 'string', 'description' => 'Focus keyword'),
+                        'canonical' => array('type' => 'string', 'description' => 'Canonical URL'),
+                        'open_graph_title' => array('type' => 'string', 'description' => 'Open Graph title'),
+                        'open_graph_description' => array('type' => 'string', 'description' => 'Open Graph description'),
+                        'twitter_title' => array('type' => 'string', 'description' => 'Twitter title'),
+                        'twitter_description' => array('type' => 'string', 'description' => 'Twitter description'),
+                    ),
+                    'required' => array('object_id'),
+                ),
+                'endpoint' => '/yoast-indexable',
                 'method' => 'POST',
             ),
         );
